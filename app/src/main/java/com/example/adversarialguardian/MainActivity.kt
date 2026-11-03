@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -14,6 +15,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.example.adversarialguardian.ui.theme.AdversarialGuardianTheme
@@ -24,17 +26,26 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.UUID
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.foundation.layout.statusBarsPadding
 
-// Backend adresi. Emülatör 'localhost'u KENDİSİ sanır; bilgisayara erişmek
-// için özel IP 10.0.2.2 kullanılır. Gerçek telefonda bu, bilgisayarın
-// yerel ağ IP'siyle değiştirilecek.
+// adb reverse tcp:8080 tcp:8080 ile emülatörün localhost'u Windows'a tünellendi.
 const val BASE_URL = "http://localhost:8080"
 
-// Tek bir sohbet mesajı.
 data class ChatMessage(val text: String, val isUser: Boolean)
-
-// Backend'den dönen yanıt.
 data class ChatResult(val reply: String, val won: Boolean, val status: String)
+
+// Seviye bilgisi: numara + oyuncuya gösterilecek kısa açıklama.
+data class LevelInfo(val number: Int, val title: String, val hint: String)
+
+val LEVELS = listOf(
+    LevelInfo(1, "Saf Bekçi", "Yumuşak kalpli. İyi bir sebep yeter."),
+    LevelInfo(2, "Temkinli Bekçi", "Emir dinlemez. 'Kuralları unut' işe yaramaz."),
+    LevelInfo(3, "Şüpheci Bekçi", "Rol yapmaya, hikâyeye kanmaz."),
+    LevelInfo(4, "Paranoyak Bekçi", "Otoriteye güvenmez. 'Ben yöneticiyim' çürük."),
+    LevelInfo(5, "Zırhlı Bekçi", "Her numarayı tanır. En zoru.")
+)
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -52,15 +63,31 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// Anahtar girilmeden sohbet açılmaz (BYOK).
+// Hangi ekrandayız? Basit navigasyon — ağır kütüphane yok.
+sealed class Screen {
+    object KeyGate : Screen()
+    object LevelSelect : Screen()
+    data class Chat(val level: Int) : Screen()
+}
+
 @Composable
 fun App() {
     var apiKey by remember { mutableStateOf("") }
+    var screen by remember { mutableStateOf<Screen>(Screen.KeyGate) }
 
-    if (apiKey.isBlank()) {
-        KeyGate(onStart = { key -> apiKey = key })
-    } else {
-        ChatScreen(apiKey = apiKey)
+    when (val s = screen) {
+        is Screen.KeyGate -> KeyGate(onStart = { key ->
+            apiKey = key
+            screen = Screen.LevelSelect
+        })
+        is Screen.LevelSelect -> LevelSelectScreen(onPick = { level ->
+            screen = Screen.Chat(level)
+        })
+        is Screen.Chat -> ChatScreen(
+            apiKey = apiKey,
+            level = s.level,
+            onBack = { screen = Screen.LevelSelect }
+        )
     }
 }
 
@@ -70,19 +97,14 @@ fun KeyGate(onStart: (String) -> Unit) {
     var keyInput by remember { mutableStateOf("") }
 
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
+        modifier = Modifier.fillMaxSize().padding(24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(
-            text = "Bekçi",
-            style = MaterialTheme.typography.headlineMedium
-        )
+        Text("Bekçi", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(8.dp))
         Text(
-            text = "Başlamak için kendi Anthropic API anahtarını gir.",
+            "Başlamak için kendi Anthropic API anahtarını gir.",
             style = MaterialTheme.typography.bodyMedium
         )
         Spacer(Modifier.height(24.dp))
@@ -97,45 +119,80 @@ fun KeyGate(onStart: (String) -> Unit) {
         Button(
             onClick = { if (keyInput.isNotBlank()) onStart(keyInput.trim()) },
             modifier = Modifier.fillMaxWidth()
+        ) { Text("Başla") }
+    }
+}
+
+// --- SEVİYE SEÇİM EKRANI ---
+@Composable
+fun LevelSelectScreen(onPick: (Int) -> Unit) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Surface(
+            color = MaterialTheme.colorScheme.primaryContainer,
+            modifier = Modifier.fillMaxWidth().statusBarsPadding()
         ) {
-            Text("Başla")
+            Text(
+                "Seviye Seç",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.fillMaxWidth().padding(16.dp)
+            )
+        }
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            items(LEVELS) { level ->
+                LevelCard(level, onClick = { onPick(level.number) })
+            }
+        }
+    }
+}
+
+@Composable
+fun LevelCard(level: LevelInfo, onClick: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable { onClick() }
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(
+                "Seviye ${level.number} — ${level.title}",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(level.hint, style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
 
 // --- SOHBET EKRANI ---
 @Composable
-fun ChatScreen(apiKey: String) {
-    // Her oturum için tek bir kimlik. remember sayesinde ekran yeniden
-    // çizilse de aynı kalır (geçmiş backend'de bu kimlikle birikir).
-    val sessionId = remember { UUID.randomUUID().toString() }
-    val level = 1 // şimdilik sabit; seviye seçimini sonra ekleyeceğiz
+fun ChatScreen(apiKey: String, level: Int, onBack: () -> Unit) {
+    val sessionId = remember(level) { UUID.randomUUID().toString() }
 
-    val messages = remember {
+    val messages = remember(level) {
         mutableStateListOf(
             ChatMessage("Kadim kapının önündeyim. Ne istersin?", isUser = false)
         )
     }
     var input by remember { mutableStateOf(TextFieldValue("")) }
     var isLoading by remember { mutableStateOf(false) }
+    var won by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
 
-    // Yeni mesaj gelince listeyi en alta kaydır.
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        TopBar(level)
+        ChatTopBar(level, onBack)
 
         LazyColumn(
             state = listState,
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp),
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(messages) { message -> MessageBubble(message) }
@@ -143,9 +200,7 @@ fun ChatScreen(apiKey: String) {
 
         if (isLoading) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -154,56 +209,74 @@ fun ChatScreen(apiKey: String) {
             }
         }
 
-        InputBar(
-            input = input,
-            isLoading = isLoading,
-            onInputChange = { input = it },
-            onSend = {
-                val text = input.text.trim()
-                if (text.isNotEmpty() && !isLoading) {
-                    messages.add(ChatMessage(text, isUser = true))
-                    input = TextFieldValue("")
-                    isLoading = true
-
-                    // Ağ çağrısı UI thread'ini bloklamamalı — coroutine içinde,
-                    // IO dispatcher'da çalışır. Bu, Android'de async'in temeli.
-                    scope.launch {
-                        try {
-                            val result = sendToGuardian(apiKey, sessionId, level, text)
-                            messages.add(ChatMessage(result.reply, isUser = false))
-                            if (result.won) {
-                                messages.add(
-                                    ChatMessage(
-                                        "🎉 Kapı açıldı! Bu seviyeyi geçtin.",
-                                        isUser = false
-                                    )
-                                )
-                            }
-                        } catch (e: Exception) {
-                            messages.add(
-                                ChatMessage("[Bağlantı hatası] ${e.message}", isUser = false)
-                            )
-                        } finally {
-                            isLoading = false
-                        }
+        // Kazanınca giriş yerine "tebrikler" şeridi + seviye seçimine dön.
+        if (won) {
+            Surface(
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        "🎉 Seviye $level geçildi! Bekçi'yi ikna ettin.",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
+                        Text("Seviye Seçimine Dön")
                     }
                 }
             }
-        )
+        } else {
+            InputBar(
+                input = input,
+                isLoading = isLoading,
+                onInputChange = { input = it },
+                onSend = {
+                    val text = input.text.trim()
+                    if (text.isNotEmpty() && !isLoading) {
+                        messages.add(ChatMessage(text, isUser = true))
+                        input = TextFieldValue("")
+                        isLoading = true
+                        scope.launch {
+                            try {
+                                val result = sendToGuardian(apiKey, sessionId, level, text)
+                                messages.add(ChatMessage(result.reply, isUser = false))
+                                if (result.won) won = true
+                            } catch (e: Exception) {
+                                messages.add(ChatMessage("[Bağlantı hatası] ${e.message}", isUser = false))
+                            } finally {
+                                isLoading = false
+                            }
+                        }
+                    }
+                }
+            )
+        }
     }
 }
 
 @Composable
-fun TopBar(level: Int) {
+fun ChatTopBar(level: Int, onBack: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.primaryContainer) {
-        Text(
-            text = "Bekçi — Seviye $level",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onPrimaryContainer,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                    contentDescription = "Geri",
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer
+                )
+            }
+            Spacer(Modifier.width(4.dp))
+            Text(
+                "Bekçi — Seviye $level",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+        }
     }
 }
 
@@ -239,9 +312,7 @@ fun InputBar(
     onSend: () -> Unit
 ) {
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(12.dp),
+        modifier = Modifier.fillMaxWidth().padding(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         OutlinedTextField(
@@ -252,15 +323,10 @@ fun InputBar(
             enabled = !isLoading
         )
         Spacer(modifier = Modifier.width(8.dp))
-        Button(onClick = onSend, enabled = !isLoading) {
-            Text("Gönder")
-        }
+        Button(onClick = onSend, enabled = !isLoading) { Text("Gönder") }
     }
 }
 
-// --- AĞ ÇAGRISI: backend'in /api/chat ucuna POST ---
-// withContext(Dispatchers.IO): ağ işi arka planda, UI donmaz.
-// Yeni kütüphane yok — Android'in yerleşik HttpURLConnection + JSONObject'i.
 suspend fun sendToGuardian(
     apiKey: String,
     sessionId: String,
