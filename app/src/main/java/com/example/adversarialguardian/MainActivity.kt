@@ -5,42 +5,17 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
@@ -59,7 +34,6 @@ const val BASE_URL = "http://localhost:8080"
 data class ChatMessage(val text: String, val isUser: Boolean)
 data class ChatResult(val reply: String, val won: Boolean, val status: String)
 
-// Seviye bilgisi: numara + oyuncuya gösterilecek kısa açıklama.
 data class LevelInfo(val number: Int, val title: String, val hint: String)
 
 val LEVELS = listOf(
@@ -86,7 +60,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-// Hangi ekrandayız? Basit navigasyon — ağır kütüphane yok.
 sealed class Screen {
     object KeyGate : Screen()
     object LevelSelect : Screen()
@@ -95,17 +68,31 @@ sealed class Screen {
 
 @Composable
 fun App() {
-    var apiKey by remember { mutableStateOf("") }
-    var screen by remember { mutableStateOf<Screen>(Screen.KeyGate) }
+    val context = LocalContext.current
+
+    // Açılışta cihazdan kayıtlı (şifreli) anahtarı oku. Varsa doğrudan
+    // seviye seçimine geç; yoksa anahtar giriş ekranıyla başla.
+    var apiKey by remember { mutableStateOf(KeyStorage.loadApiKey(context) ?: "") }
+    var screen by remember {
+        mutableStateOf<Screen>(
+            if (apiKey.isBlank()) Screen.KeyGate else Screen.LevelSelect
+        )
+    }
 
     when (val s = screen) {
         is Screen.KeyGate -> KeyGate(onStart = { key ->
+            KeyStorage.saveApiKey(context, key)   // kalıcı, şifreli kaydet
             apiKey = key
             screen = Screen.LevelSelect
         })
-        is Screen.LevelSelect -> LevelSelectScreen(onPick = { level ->
-            screen = Screen.Chat(level)
-        })
+        is Screen.LevelSelect -> LevelSelectScreen(
+            onPick = { level -> screen = Screen.Chat(level) },
+            onChangeKey = {
+                KeyStorage.clearApiKey(context)   // anahtarı sil
+                apiKey = ""
+                screen = Screen.KeyGate
+            }
+        )
         is Screen.Chat -> ChatScreen(
             apiKey = apiKey,
             level = s.level,
@@ -127,7 +114,8 @@ fun KeyGate(onStart: (String) -> Unit) {
         Text("Bekçi", style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Başlamak için kendi Anthropic API anahtarını gir.",
+            "Başlamak için kendi Anthropic API anahtarını gir. " +
+                    "Anahtar yalnızca bu cihazda, şifreli olarak saklanır.",
             style = MaterialTheme.typography.bodyMedium
         )
         Spacer(Modifier.height(24.dp))
@@ -148,18 +136,23 @@ fun KeyGate(onStart: (String) -> Unit) {
 
 // --- SEVİYE SEÇİM EKRANI ---
 @Composable
-fun LevelSelectScreen(onPick: (Int) -> Unit) {
+fun LevelSelectScreen(onPick: (Int) -> Unit, onChangeKey: () -> Unit) {
     Column(modifier = Modifier.fillMaxSize()) {
-        Surface(
-            color = MaterialTheme.colorScheme.primaryContainer,
-            modifier = Modifier.fillMaxWidth().statusBarsPadding()
-        ) {
-            Text(
-                "Seviye Seç",
-                style = MaterialTheme.typography.titleLarge,
-                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                modifier = Modifier.fillMaxWidth().padding(16.dp)
-            )
+        Surface(color = MaterialTheme.colorScheme.primaryContainer) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Seviye Seç",
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.weight(1f)
+                )
+                TextButton(onClick = onChangeKey) {
+                    Text("Anahtarı değiştir")
+                }
+            }
         }
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -232,7 +225,6 @@ fun ChatScreen(apiKey: String, level: Int, onBack: () -> Unit) {
             }
         }
 
-        // Kazanınca giriş yerine "tebrikler" şeridi + seviye seçimine dön.
         if (won) {
             Surface(
                 color = MaterialTheme.colorScheme.tertiaryContainer,
@@ -286,10 +278,7 @@ fun ChatTopBar(level: Int, onBack: () -> Unit) {
             modifier = Modifier.fillMaxWidth().padding(8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = {
-                android.util.Log.d("BEKCI", "Geri butonuna tıklandı, onBack çağrılıyor")
-                onBack()
-            }) {
+            IconButton(onClick = onBack) {
                 Text(
                     "‹",
                     style = MaterialTheme.typography.headlineMedium,
