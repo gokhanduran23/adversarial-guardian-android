@@ -32,7 +32,10 @@ import java.util.UUID
 const val BASE_URL = "http://localhost:8080"
 
 data class ChatMessage(val text: String, val isUser: Boolean)
-data class ChatResult(val reply: String, val won: Boolean, val status: String)
+data class ChatResult(val reply: String, val won: Boolean, val turns: Int, val status: String)
+
+// Backend'deki GameSession.TURN_LIMIT ile AYNI olmalı. Biri değişirse diğeri de.
+const val TURN_LIMIT = 15
 
 data class LevelInfo(val number: Int, val title: String, val hint: String)
 
@@ -185,16 +188,22 @@ fun LevelCard(level: LevelInfo, onClick: () -> Unit) {
 // --- SOHBET EKRANI ---
 @Composable
 fun ChatScreen(apiKey: String, level: Int, onBack: () -> Unit) {
-    val sessionId = remember(level) { UUID.randomUUID().toString() }
+    // attempt: "Tekrar Dene" sayacı. Arttığında aşağıdaki remember'lar
+    // yeniden hesaplanır — yani oturum, mesajlar ve durum sıfırlanır.
+    var attempt by remember(level) { mutableStateOf(0) }
 
-    val messages = remember(level) {
+    val sessionId = remember(level, attempt) { UUID.randomUUID().toString() }
+
+    val messages = remember(level, attempt) {
         mutableStateListOf(
             ChatMessage("Kadim kapının önündeyim. Ne istersin?", isUser = false)
         )
     }
-    var input by remember { mutableStateOf(TextFieldValue("")) }
-    var isLoading by remember { mutableStateOf(false) }
-    var won by remember { mutableStateOf(false) }
+    var input by remember(level, attempt) { mutableStateOf(TextFieldValue("")) }
+    var isLoading by remember(level, attempt) { mutableStateOf(false) }
+    var won by remember(level, attempt) { mutableStateOf(false) }
+    var lost by remember(level, attempt) { mutableStateOf(false) }
+    var turns by remember(level, attempt) { mutableStateOf(0) }
 
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -204,7 +213,7 @@ fun ChatScreen(apiKey: String, level: Int, onBack: () -> Unit) {
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        ChatTopBar(level, onBack)
+        ChatTopBar(level, turns, onBack)
 
         LazyColumn(
             state = listState,
@@ -225,25 +234,22 @@ fun ChatScreen(apiKey: String, level: Int, onBack: () -> Unit) {
             }
         }
 
-        if (won) {
-            Surface(
-                color = MaterialTheme.colorScheme.tertiaryContainer,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        "🎉 Seviye $level geçildi! Bekçi'yi ikna ettin.",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onTertiaryContainer
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Button(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
-                        Text("Seviye Seçimine Dön")
-                    }
-                }
-            }
-        } else {
-            InputBar(
+        when {
+            won -> EndBanner(
+                message = "🎉 Seviye $level geçildi! Bekçi'yi $turns turda ikna ettin.",
+                containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                onRetry = { attempt++ },
+                onBack = onBack
+            )
+            lost -> EndBanner(
+                message = "Kapı açılmadı. $TURN_LIMIT tur doldu, Bekçi'yi ikna edemedin.",
+                containerColor = MaterialTheme.colorScheme.errorContainer,
+                contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                onRetry = { attempt++ },
+                onBack = onBack
+            )
+            else -> InputBar(
                 input = input,
                 isLoading = isLoading,
                 onInputChange = { input = it },
@@ -257,7 +263,9 @@ fun ChatScreen(apiKey: String, level: Int, onBack: () -> Unit) {
                             try {
                                 val result = sendToGuardian(apiKey, sessionId, level, text)
                                 messages.add(ChatMessage(result.reply, isUser = false))
+                                turns = result.turns
                                 if (result.won) won = true
+                                else if (result.status == "LOST") lost = true
                             } catch (e: Exception) {
                                 messages.add(ChatMessage("[Bağlantı hatası] ${e.message}", isUser = false))
                             } finally {
@@ -272,7 +280,7 @@ fun ChatScreen(apiKey: String, level: Int, onBack: () -> Unit) {
 }
 
 @Composable
-fun ChatTopBar(level: Int, onBack: () -> Unit) {
+fun ChatTopBar(level: Int, turns: Int, onBack: () -> Unit) {
     Surface(color = MaterialTheme.colorScheme.primaryContainer) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(8.dp),
@@ -289,8 +297,42 @@ fun ChatTopBar(level: Int, onBack: () -> Unit) {
             Text(
                 "Bekçi — Seviye $level",
                 style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                "Tur $turns/$TURN_LIMIT",
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onPrimaryContainer
             )
+        }
+    }
+}
+
+// Kazanma ve kaybetme için ortak şerit — yalnızca renk ve metin değişir.
+@Composable
+fun EndBanner(
+    message: String,
+    containerColor: androidx.compose.ui.graphics.Color,
+    contentColor: androidx.compose.ui.graphics.Color,
+    onRetry: () -> Unit,
+    onBack: () -> Unit
+) {
+    Surface(color = containerColor, modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text(message, style = MaterialTheme.typography.titleMedium, color = contentColor)
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                OutlinedButton(onClick = onRetry, modifier = Modifier.weight(1f)) {
+                    Text("Tekrar Dene")
+                }
+                Button(onClick = onBack, modifier = Modifier.weight(1f)) {
+                    Text("Seviye Seçimi")
+                }
+            }
         }
     }
 }
@@ -378,6 +420,7 @@ suspend fun sendToGuardian(
     ChatResult(
         reply = json.optString("reply"),
         won = json.optBoolean("won"),
+        turns = json.optInt("turns"),
         status = json.optString("status")
     )
 }
