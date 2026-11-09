@@ -32,6 +32,25 @@ object ProgressStorage {
         }
     }
 
+    // --- En iyi (en az) tur skoru, seviye başına. 0 = henüz kayıt yok. ---
+
+    fun saveBestTurns(context: Context, level: Int, turns: Int) {
+        val current = prefs(context).getInt("best_turns_$level", 0)
+        if (current == 0 || turns < current) {
+            prefs(context).edit().putInt("best_turns_$level", turns).apply()
+        }
+    }
+
+    /** Tüm seviyelerin en iyi skorlarını {seviye: tur} olarak döndürür. */
+    fun loadAllBestTurns(context: Context): Map<Int, Int> {
+        val result = mutableMapOf<Int, Int>()
+        for (level in 1..5) {
+            val t = prefs(context).getInt("best_turns_$level", 0)
+            if (t > 0) result[level] = t
+        }
+        return result
+    }
+
     fun reset(context: Context) {
         prefs(context).edit().clear().apply()
     }

@@ -79,6 +79,8 @@ fun App() {
     var apiKey by remember { mutableStateOf(KeyStorage.loadApiKey(context) ?: "") }
     // Geçilen en yüksek seviye (ilerleme). Düz SharedPreferences'tan okunur.
     var maxCompletedLevel by remember { mutableStateOf(ProgressStorage.loadMaxLevel(context)) }
+    // Seviye başına en iyi tur skoru {seviye: tur}.
+    var bestTurns by remember { mutableStateOf(ProgressStorage.loadAllBestTurns(context)) }
     var screen by remember {
         mutableStateOf<Screen>(
             if (apiKey.isBlank()) Screen.KeyGate else Screen.LevelSelect
@@ -93,6 +95,7 @@ fun App() {
         })
         is Screen.LevelSelect -> LevelSelectScreen(
             maxCompletedLevel = maxCompletedLevel,
+            bestTurns = bestTurns,
             onPick = { level -> screen = Screen.Chat(level) },
             onChangeKey = {
                 KeyStorage.clearApiKey(context)   // anahtarı sil
@@ -102,17 +105,23 @@ fun App() {
             onReset = {
                 ProgressStorage.reset(context)
                 maxCompletedLevel = 0
+                bestTurns = emptyMap()
             }
         )
         is Screen.Chat -> ChatScreen(
             apiKey = apiKey,
             level = s.level,
             onBack = { screen = Screen.LevelSelect },
-            onWin = { completed ->
-                // Kazanınca ilerlemeyi kaydet + ekrandaki durumu güncelle.
+            onWin = { completed, turns ->
+                // Kazanınca ilerlemeyi + en iyi skoru kaydet, ekranı güncelle.
                 if (completed > maxCompletedLevel) {
                     maxCompletedLevel = completed
                     ProgressStorage.saveMaxLevel(context, completed)
+                }
+                val prev = bestTurns[completed]
+                if (prev == null || turns < prev) {
+                    ProgressStorage.saveBestTurns(context, completed, turns)
+                    bestTurns = bestTurns + (completed to turns)
                 }
             },
             onNext = { screen = Screen.Chat(s.level + 1) }
@@ -157,10 +166,13 @@ fun KeyGate(onStart: (String) -> Unit) {
 @Composable
 fun LevelSelectScreen(
     maxCompletedLevel: Int,
+    bestTurns: Map<Int, Int>,
     onPick: (Int) -> Unit,
     onChangeKey: () -> Unit,
     onReset: () -> Unit
 ) {
+    val allDone = maxCompletedLevel >= LEVELS.size
+
     Column(modifier = Modifier.fillMaxSize()) {
         Surface(color = MaterialTheme.colorScheme.primaryContainer) {
             Row(
@@ -178,6 +190,23 @@ fun LevelSelectScreen(
                 }
             }
         }
+
+        // Tüm seviyeler bitince kutlama şeridi.
+        if (allDone) {
+            Surface(
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    "🏆 Tüm seviyeleri geçtin! Artık her Bekçi'yi ikna edebiliyorsun. " +
+                            "Daha az turda geçmeyi deneyebilirsin.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                    modifier = Modifier.padding(16.dp)
+                )
+            }
+        }
+
         LazyColumn(
             modifier = Modifier.weight(1f).fillMaxWidth().padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -189,6 +218,7 @@ fun LevelSelectScreen(
                     level = level,
                     completed = completed,
                     unlocked = unlocked,
+                    bestTurn = bestTurns[level.number],
                     onClick = { if (unlocked) onPick(level.number) }
                 )
             }
@@ -208,6 +238,7 @@ fun LevelCard(
     level: LevelInfo,
     completed: Boolean,
     unlocked: Boolean,
+    bestTurn: Int?,
     onClick: () -> Unit
 ) {
     Card(
@@ -231,6 +262,16 @@ fun LevelCard(
             }
             Spacer(Modifier.height(4.dp))
             Text(level.hint, style = MaterialTheme.typography.bodyMedium)
+            // Geçildiyse en iyi tur skorunu göster.
+            if (completed && bestTurn != null) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "En iyi: $bestTurn tur",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
     }
 }
@@ -241,7 +282,7 @@ fun ChatScreen(
     apiKey: String,
     level: Int,
     onBack: () -> Unit,
-    onWin: (Int) -> Unit,
+    onWin: (Int, Int) -> Unit,
     onNext: () -> Unit
 ) {
     // attempt: "Tekrar Dene" sayacı. Arttığında aşağıdaki remember'lar
@@ -268,9 +309,9 @@ fun ChatScreen(
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
     }
 
-    // Kazanınca ilerlemeyi bir kez bildir (App bunu kaydeder).
+    // Kazanınca ilerlemeyi + kaç turda geçildiğini bir kez bildir.
     LaunchedEffect(won) {
-        if (won) onWin(level)
+        if (won) onWin(level, turns)
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
