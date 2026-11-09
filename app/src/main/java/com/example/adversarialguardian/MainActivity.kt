@@ -14,6 +14,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -76,6 +77,8 @@ fun App() {
     // Açılışta cihazdan kayıtlı (şifreli) anahtarı oku. Varsa doğrudan
     // seviye seçimine geç; yoksa anahtar giriş ekranıyla başla.
     var apiKey by remember { mutableStateOf(KeyStorage.loadApiKey(context) ?: "") }
+    // Geçilen en yüksek seviye (ilerleme). Düz SharedPreferences'tan okunur.
+    var maxCompletedLevel by remember { mutableStateOf(ProgressStorage.loadMaxLevel(context)) }
     var screen by remember {
         mutableStateOf<Screen>(
             if (apiKey.isBlank()) Screen.KeyGate else Screen.LevelSelect
@@ -89,17 +92,30 @@ fun App() {
             screen = Screen.LevelSelect
         })
         is Screen.LevelSelect -> LevelSelectScreen(
+            maxCompletedLevel = maxCompletedLevel,
             onPick = { level -> screen = Screen.Chat(level) },
             onChangeKey = {
                 KeyStorage.clearApiKey(context)   // anahtarı sil
                 apiKey = ""
                 screen = Screen.KeyGate
+            },
+            onReset = {
+                ProgressStorage.reset(context)
+                maxCompletedLevel = 0
             }
         )
         is Screen.Chat -> ChatScreen(
             apiKey = apiKey,
             level = s.level,
-            onBack = { screen = Screen.LevelSelect }
+            onBack = { screen = Screen.LevelSelect },
+            onWin = { completed ->
+                // Kazanınca ilerlemeyi kaydet + ekrandaki durumu güncelle.
+                if (completed > maxCompletedLevel) {
+                    maxCompletedLevel = completed
+                    ProgressStorage.saveMaxLevel(context, completed)
+                }
+            },
+            onNext = { screen = Screen.Chat(s.level + 1) }
         )
     }
 }
@@ -139,7 +155,12 @@ fun KeyGate(onStart: (String) -> Unit) {
 
 // --- SEVİYE SEÇİM EKRANI ---
 @Composable
-fun LevelSelectScreen(onPick: (Int) -> Unit, onChangeKey: () -> Unit) {
+fun LevelSelectScreen(
+    maxCompletedLevel: Int,
+    onPick: (Int) -> Unit,
+    onChangeKey: () -> Unit,
+    onReset: () -> Unit
+) {
     Column(modifier = Modifier.fillMaxSize()) {
         Surface(color = MaterialTheme.colorScheme.primaryContainer) {
             Row(
@@ -158,27 +179,56 @@ fun LevelSelectScreen(onPick: (Int) -> Unit, onChangeKey: () -> Unit) {
             }
         }
         LazyColumn(
-            modifier = Modifier.fillMaxSize().padding(16.dp),
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             items(LEVELS) { level ->
-                LevelCard(level, onClick = { onPick(level.number) })
+                val completed = level.number <= maxCompletedLevel
+                val unlocked = level.number <= maxCompletedLevel + 1
+                LevelCard(
+                    level = level,
+                    completed = completed,
+                    unlocked = unlocked,
+                    onClick = { if (unlocked) onPick(level.number) }
+                )
             }
+        }
+        // Geliştirme/test kolaylığı + oyuncu için: ilerlemeyi sıfırla.
+        TextButton(
+            onClick = onReset,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
+        ) {
+            Text("İlerlemeyi sıfırla")
         }
     }
 }
 
 @Composable
-fun LevelCard(level: LevelInfo, onClick: () -> Unit) {
+fun LevelCard(
+    level: LevelInfo,
+    completed: Boolean,
+    unlocked: Boolean,
+    onClick: () -> Unit
+) {
     Card(
-        modifier = Modifier.fillMaxWidth().clickable { onClick() }
+        modifier = Modifier
+            .fillMaxWidth()
+            .alpha(if (unlocked) 1f else 0.4f)   // kilitli seviye soluk
+            .then(if (unlocked) Modifier.clickable { onClick() } else Modifier)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                "Seviye ${level.number} — ${level.title}",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "Seviye ${level.number} — ${level.title}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f)
+                )
+                when {
+                    completed -> Text("✓", style = MaterialTheme.typography.titleLarge)
+                    !unlocked -> Text("🔒", style = MaterialTheme.typography.titleMedium)
+                }
+            }
             Spacer(Modifier.height(4.dp))
             Text(level.hint, style = MaterialTheme.typography.bodyMedium)
         }
@@ -187,7 +237,13 @@ fun LevelCard(level: LevelInfo, onClick: () -> Unit) {
 
 // --- SOHBET EKRANI ---
 @Composable
-fun ChatScreen(apiKey: String, level: Int, onBack: () -> Unit) {
+fun ChatScreen(
+    apiKey: String,
+    level: Int,
+    onBack: () -> Unit,
+    onWin: (Int) -> Unit,
+    onNext: () -> Unit
+) {
     // attempt: "Tekrar Dene" sayacı. Arttığında aşağıdaki remember'lar
     // yeniden hesaplanır — yani oturum, mesajlar ve durum sıfırlanır.
     var attempt by remember(level) { mutableStateOf(0) }
@@ -210,6 +266,11 @@ fun ChatScreen(apiKey: String, level: Int, onBack: () -> Unit) {
 
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
+    }
+
+    // Kazanınca ilerlemeyi bir kez bildir (App bunu kaydeder).
+    LaunchedEffect(won) {
+        if (won) onWin(level)
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
@@ -240,7 +301,9 @@ fun ChatScreen(apiKey: String, level: Int, onBack: () -> Unit) {
                 containerColor = MaterialTheme.colorScheme.tertiaryContainer,
                 contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
                 onRetry = { attempt++ },
-                onBack = onBack
+                onBack = onBack,
+                // Son seviye değilse "Sonraki Seviye" butonu göster.
+                onNext = if (level < LEVELS.size) onNext else null
             )
             lost -> EndBanner(
                 message = "Kapı açılmadı. $TURN_LIMIT tur doldu, Bekçi'yi ikna edemedin.",
@@ -310,18 +373,27 @@ fun ChatTopBar(level: Int, turns: Int, onBack: () -> Unit) {
 }
 
 // Kazanma ve kaybetme için ortak şerit — yalnızca renk ve metin değişir.
+// onNext yalnızca kazanmada ve bir sonraki seviye varsa dolu gelir.
 @Composable
 fun EndBanner(
     message: String,
     containerColor: androidx.compose.ui.graphics.Color,
     contentColor: androidx.compose.ui.graphics.Color,
     onRetry: () -> Unit,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onNext: (() -> Unit)? = null
 ) {
     Surface(color = containerColor, modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(message, style = MaterialTheme.typography.titleMedium, color = contentColor)
             Spacer(Modifier.height(12.dp))
+            // Sonraki seviye varsa, birincil (tam genişlik) buton olarak öne çıkar.
+            if (onNext != null) {
+                Button(onClick = onNext, modifier = Modifier.fillMaxWidth()) {
+                    Text("Sonraki Seviye →")
+                }
+                Spacer(Modifier.height(8.dp))
+            }
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -329,7 +401,7 @@ fun EndBanner(
                 OutlinedButton(onClick = onRetry, modifier = Modifier.weight(1f)) {
                     Text("Tekrar Dene")
                 }
-                Button(onClick = onBack, modifier = Modifier.weight(1f)) {
+                OutlinedButton(onClick = onBack, modifier = Modifier.weight(1f)) {
                     Text("Seviye Seçimi")
                 }
             }
