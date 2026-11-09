@@ -106,6 +106,11 @@ fun App() {
                 ProgressStorage.reset(context)
                 maxCompletedLevel = 0
                 bestTurns = emptyMap()
+            },
+            onUnlockAll = {
+                // Test kısayolu: tüm seviyeleri geçilmiş say.
+                maxCompletedLevel = LEVELS.size
+                ProgressStorage.saveMaxLevel(context, LEVELS.size)
             }
         )
         is Screen.Chat -> ChatScreen(
@@ -169,7 +174,8 @@ fun LevelSelectScreen(
     bestTurns: Map<Int, Int>,
     onPick: (Int) -> Unit,
     onChangeKey: () -> Unit,
-    onReset: () -> Unit
+    onReset: () -> Unit,
+    onUnlockAll: () -> Unit
 ) {
     val allDone = maxCompletedLevel >= LEVELS.size
 
@@ -223,12 +229,16 @@ fun LevelSelectScreen(
                 )
             }
         }
-        // Geliştirme/test kolaylığı + oyuncu için: ilerlemeyi sıfırla.
-        TextButton(
-            onClick = onReset,
+        // Alt satır: sıfırla + test kısayolu (tümünü aç).
+        Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 4.dp)
         ) {
-            Text("İlerlemeyi sıfırla")
+            TextButton(onClick = onReset, modifier = Modifier.weight(1f)) {
+                Text("İlerlemeyi sıfırla")
+            }
+            TextButton(onClick = onUnlockAll, modifier = Modifier.weight(1f)) {
+                Text("Tümünü aç (test)")
+            }
         }
     }
 }
